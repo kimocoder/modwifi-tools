@@ -71,25 +71,24 @@ bool verify_mic(uint8_t *buf, size_t len, int keyver, uint8_t mic[16], uint8_t k
 static int decrypt_eapol_key_data_rc4(uint8_t ek[32], uint8_t *buf, uint8_t *out, size_t len)
 {
 	unsigned char skip_buf[256] = {0};
-	EVP_CIPHER_CTX ctx;
 	int outl;
 
 	// initialize RC4 stream cipher
-	EVP_CIPHER_CTX_init(&ctx);
-	if (!EVP_CIPHER_CTX_set_padding(&ctx, 0)
-		|| !EVP_CipherInit_ex(&ctx, EVP_rc4(), NULL, NULL, NULL, 1)
-		|| !EVP_CIPHER_CTX_set_key_length(&ctx, 32)
-		|| !EVP_CipherInit_ex(&ctx, NULL, NULL, ek, NULL, 1))
+	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+	if (!EVP_CIPHER_CTX_set_padding(ctx, 0)
+		|| !EVP_CipherInit_ex(ctx, EVP_rc4(), NULL, NULL, NULL, 1)
+		|| !EVP_CIPHER_CTX_set_key_length(ctx, 32)
+		|| !EVP_CipherInit_ex(ctx, NULL, NULL, ek, NULL, 1))
 	{
 		fprintf(stderr, "%s: failed to initialize RC4 stream cipher\n", __FUNCTION__);
-		EVP_CIPHER_CTX_cleanup(&ctx);
+		EVP_CIPHER_CTX_free(ctx);
 		return -1;
 	}
 
 	// skip first 256 bytes of RC4 cipher
-	if (!EVP_CipherUpdate(&ctx, skip_buf, &outl, skip_buf, sizeof(skip_buf))) {
+	if (!EVP_CipherUpdate(ctx, skip_buf, &outl, skip_buf, sizeof(skip_buf))) {
 		fprintf(stderr, "%s: failed to skip first 256 bytes of RC4\n", __FUNCTION__);
-		EVP_CIPHER_CTX_cleanup(&ctx);
+		EVP_CIPHER_CTX_free(ctx);
 		return -1;
 	}
 
@@ -100,9 +99,9 @@ static int decrypt_eapol_key_data_rc4(uint8_t ek[32], uint8_t *buf, uint8_t *out
 #endif
 
 	// decrypt data using current RC4 keystream
-	if (!EVP_CipherUpdate(&ctx, out, &outl, buf, len)) {
+	if (!EVP_CipherUpdate(ctx, out, &outl, buf, len)) {
 		fprintf(stderr, "%s: failed to decrypt EAPOL key data\n", __FUNCTION__);
-		EVP_CIPHER_CTX_cleanup(&ctx);
+		EVP_CIPHER_CTX_free(ctx);
 		return -1;
 	}
 
