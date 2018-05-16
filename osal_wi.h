@@ -70,7 +70,7 @@ int osal_wi_set_mtu(wi_dev *dev, int mtu);
  * Interface to reactive beacon jamming attack (implemented in firmware).
  * This is a *BLOCKING* function. It will only return once the jamming has finished!!
  */
-int osal_wi_jam_beacons(wi_dev *dev, const MacAddr &bssid, int msecs);
+int osal_wi_jam_beacons(wi_dev *dev, const MacAddr &bssid, int msecs, int jam_packet_length, int jam_delay_us, int jam_rate_index, int match_on_position, uint8_t match_packet_type);
 
 /** Be the first to reply to a probe requests from a specific source */
 int osal_wi_fastreply_packet(wi_dev *dev, uint8_t *buff, size_t len);

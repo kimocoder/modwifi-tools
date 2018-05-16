@@ -17,6 +17,11 @@ struct options_t {
 	MacAddr bssid;
 	char ssid[128];
 	int seconds;
+	int jam_packet_length;
+	int jam_delay_us;
+	int jam_rate_index;
+	int match_on_position;
+	uint8_t match_packet_type;
 
 	int config_phy;
 } opt;
@@ -52,6 +57,11 @@ char usage[] =
 "                     between intervals since the dongle CPU is busy when jamming.\n"
 "                     The downside is that _between_ intervals some frames will be\n"
 "                     missed and hence won't be jammed.\n"
+"      -l bytes      : jam packet length in Bytes\n"
+"      -d us         : jam delay in microseconds\n"
+"      -r index      : rate index for jam packet\n"
+"      -m pos        : match on position\n"
+"      -n 0xFF       : match Byte\n"
 "\n";
 
 void printUsage()
@@ -76,8 +86,13 @@ bool parseConsoleArgs(int argc, char *argv[])
 	// default settings
 	memset(&opt, 0, sizeof(opt));
 	opt.seconds = 30;
+	opt.jam_packet_length = 24;
+	opt.jam_delay_us = 0;
+	opt.jam_rate_index = 0;
+	opt.match_on_position = 0;
+	opt.match_packet_type = 0x80;
 
-	while ((c = getopt_long(argc, argv, "i:s:b:p:t:h", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "h:i:s:b:p:t:l:d:r:m:n:", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -110,6 +125,28 @@ bool parseConsoleArgs(int argc, char *argv[])
 
 		case 't':
 			opt.seconds = atoi(optarg);
+			break;
+
+		case 'l':
+			opt.jam_packet_length = atoi(optarg);
+			break;
+
+		case 'd':
+			opt.jam_delay_us = atoi(optarg);
+			break;
+
+		case 'r':
+			opt.jam_rate_index = atoi(optarg);
+			break;
+
+		case 'm':
+			opt.match_on_position = atoi(optarg);
+			break;
+
+		case 'n':
+			//char bufff[2];
+			//strncpy(bufff, optarg, 2);
+			opt.match_packet_type = strtol(optarg, NULL, 16);
 			break;
 
 		default:
@@ -186,7 +223,7 @@ int reactivejam(wi_dev *jam)
 	{
 		fprintf(stderr, "=========== JAMMING =============\n");
 
-		if (osal_wi_jam_beacons(jam, opt.bssid, opt.seconds * 1000) < 0)
+		if (osal_wi_jam_beacons(jam, opt.bssid, opt.seconds * 1000, opt.jam_packet_length, opt.jam_delay_us, opt.jam_rate_index, opt.match_on_position, opt.match_packet_type) < 0)
 		{
 			fprintf(stderr, "Something went wrong when issuing the jam command\n");
 			exit(1);

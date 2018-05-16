@@ -22,6 +22,7 @@
 #include <sstream>
 #include <iostream>
 #include <fstream>
+#include <iomanip>
 
 /**
  * Documentation: http://www.carisma.slowglass.com/~tgr/libnl/doc/core.html
@@ -445,11 +446,13 @@ int osal_wi_set_mtu(wi_dev *dev, int mtu)
 	return 0;
 }
 
-int osal_wi_jam_beacons(wi_dev *dev, const MacAddr &bssid, int msecs)
+int osal_wi_jam_beacons(wi_dev *dev, const MacAddr &bssid, int msecs, int jam_packet_length, int jam_delay_us, int jam_rate_index, int match_on_position, uint8_t match_packet_type)
 {
 	std::ostringstream command;
 
-	command << bssid << "," << msecs;
+	command << bssid << "," << msecs << "," << jam_packet_length << "," << jam_delay_us << "," << jam_rate_index << "," << match_on_position << ",";
+	command << std::hex << std::setfill('0') << std::setw(2) << (int)match_packet_type;
+	std::cout << "invoke: " << command.str() << std::endl;
 
 	// jam_beacons will take duration of 0 as an infinite jam
 	return writetocmd(dev, "reactivejam", command.str());
