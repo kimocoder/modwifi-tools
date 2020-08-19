@@ -150,7 +150,7 @@ struct global_t {
 	size_t beaconlen;
 
 	uint8_t proberesp[2048];
-	size_t proberesplen;
+	int proberesplen;
 	uint16_t probeseqnum;
 
 	wi_dev *jam;
