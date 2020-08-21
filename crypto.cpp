@@ -6,6 +6,7 @@
 #include <openssl/aes.h>
 #include <openssl/rc4.h>
 
+#include <iostream>
 #include <stdexcept>
 
 #include "ieee80211header.h"
@@ -648,4 +649,36 @@ int calc_michael_key(uint8_t *buf, size_t len, uint8_t mickey[8])
 	return 0;
 }
 
+void parse_ccmp_nonce(const uint8_t *buf, const size_t len, ccmp_nonce* nonce)
+{
+	/** 802.11 standrad 2016 - 12.5.3.3.4 Construct CCM nonce */
+	nonce->pn = 0;
+	size_t pos = 0;
 
+	//TODO Set them appropriately if frame type is managemet or frame control
+	//See: 802.11 statndard 2016 - 12.5.3.3.1 CCMP cryptographic encapsulation - General - Bulletpoint (c)
+	nonce->flags.priority = 0;
+	nonce->flags.management = 0;
+	nonce->flags.zeros = 0;
+
+	ieee80211header *hdr = (ieee80211header*) buf;
+	memcpy(nonce->a2, hdr->addr2, 6);
+
+	pos = sizeof(ieee80211header);
+	if (hdr->fc.subtype >= 8 && hdr->fc.subtype <= 11) {
+		pos += sizeof(ieee80211qosheader);
+	}
+	ccmp_hdr *chdr = (ccmp_hdr*) buf + pos;
+
+	// 802.11 standard 2016 - 12.5.3.2 CCMP MPDU format - pn5 is MSB
+	//FIXME This looks dirty
+	nonce->pn |= chdr->pn5 << 5;
+	nonce->pn |= chdr->pn4 << 4;
+	nonce->pn |= chdr->pn3 << 3;
+	nonce->pn |= chdr->pn2 << 2;
+	nonce->pn |= chdr->pn1 << 1;
+	nonce->pn |= chdr->pn0;
+
+	std::cout << "Parse nonce with PN = " << nonce->pn << std::endl;
+
+}

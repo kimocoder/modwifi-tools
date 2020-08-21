@@ -13,7 +13,7 @@ add_executable(reactivejam reactivejam.cpp)
 target_link_libraries(reactivejam util)
 
 project(channelmitm)
-add_executable(channelmitm channelmitm.cpp ClientInfo.cpp SeqnumType.cpp SeqnumStats.cpp chopstate.cpp)
+add_executable(channelmitm channelmitm.cpp ClientInfo.cpp SeqnumType.cpp SeqnumStats.cpp chopstate.cpp KrackState.cpp )
 target_link_libraries(channelmitm util)
 
 project(constantjam)
