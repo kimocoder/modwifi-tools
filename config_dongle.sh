@@ -20,7 +20,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
 	exit
 fi
 
-while getopts "d:k:i:h" option; do
+while getopts "d:ki:h" option; do
 	case ${option} in
 	    d) PHY=${OPTARG}
 		    NOCS=true
