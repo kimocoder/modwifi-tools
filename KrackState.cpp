@@ -52,6 +52,7 @@ int KrackState::handle_packet(uint8_t *buf, size_t plen)
 		}
 		else if (eapol.framenum == 3)
 		{
+#if 0
 			/** If it isn't the first Msg3 and we haven't collected enough data frames yet. Block and backup Msg3 */
 			if (state >= MSG3_RCVD && num_coll_pkts < DATA_FRAMES_COLLECTION_LIMIT) 
 			{
@@ -63,14 +64,18 @@ int KrackState::handle_packet(uint8_t *buf, size_t plen)
 			// Select new packet line for encrypted packets
 			curr_line = (curr_line + 1) % PKT_LINES;
 			num_coll_pkts = 0;
+#endif
 			return plen;
 		}
 		else if(eapol.framenum == 4)
 		{
+#if 0
 			//save_eapol_msg(buf, plen, &eapol);
 			std::cout << "Blocking Msg4" << std::endl;
 			// For testing, always block Msg4
 			return 0;
+#endif
+			return plen;
 		}
 	}
 
