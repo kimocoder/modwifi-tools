@@ -18,7 +18,7 @@ EVP_CIPHER_CTX *EVP_CIPHER_CTX_new(void)
 {
     EVP_CIPHER_CTX *ctx;
 
-    ctx = OPENSSL_malloc(sizeof(*ctx));
+    ctx = (EVP_CIPHER_CTX*) OPENSSL_malloc(sizeof(*ctx));
     if (!ctx) return NULL;
 
     EVP_CIPHER_CTX_init(ctx);
