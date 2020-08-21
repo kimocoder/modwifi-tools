@@ -46,6 +46,8 @@ enum CONTROL {
 	CONTROL_ACK  = 13
 };
 
+#define MAX_MSDU_BODY_SIZE 2304
+
 /** IEEE Std 802.11-2007 paragraph 7.1 MAC frame formats */
 typedef struct PREPACK ieee80211header {
 	/** 7.1.3.1 Frame Control Field */
@@ -67,9 +69,9 @@ typedef struct PREPACK ieee80211header {
 	/** 7.1.3.2 Duration/ID field. Content varies with frame type and subtype. */
 	uint16_t duration_id;
 	/** 7.1.3.3 Address fields. For this program we always assume 3 addresses. */
-	uint8_t addr1[6];
-	uint8_t addr2[6];
-	uint8_t addr3[6];
+	uint8_t addr1[6]; // Destination
+	uint8_t addr2[6]; // Transmitter
+	uint8_t addr3[6]; // Source
 	/** 7.1.3.4 Sequence Control Field */
 	struct PREPACK sequence
 	{
@@ -93,6 +95,19 @@ typedef struct PREPACK ieee80211qosheader {
 	uint8_t reserved : 1;
 	uint8_t appsbufferstate;
 } ieee80211qosheader;
+
+struct raw_ieee80211pkt
+{
+	/** 
+	 * IEEE 802.11 standard 2016
+	 * 9.2.3 General frame format - Figure 9-1 MAC frame format
+	 * 9.2.4.7 Frame Body field - Table 9-19
+	 * Max. length ieee80211hdr + max length frame body. FCS is omitted
+	 */
+	uint8_t buf[sizeof(ieee80211header) + sizeof(ieee80211qosheader) + MAX_MSDU_BODY_SIZE];
+	/** The actual packet length */
+	size_t plen;
+};
 
 /** IEEE Std 802.11-2007 paragraph 8.3.3.2 TKIP MPDU formats */
 typedef struct PREPACK tkipheader
