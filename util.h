@@ -51,6 +51,7 @@ bool beacon_get_ssid(uint8_t *buf, size_t len, char *outssid, size_t outlen);
 bool beacon_set_ssid(uint8_t *buf, size_t *len, size_t maxlen, char *newssid);
 int beacon_get_chan(uint8_t *buf, size_t len);
 bool beacon_set_chan(uint8_t *buf, size_t len, uint8_t chan);
+bool beacon_set_channel_switch(uint8_t *buf, size_t *len, int newchan);
 
 // Template shit
 template<class T> typename std::set<T>::iterator upper_inclusive(std::set<T> &cont, T value)
