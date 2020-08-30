@@ -672,12 +672,12 @@ void parse_ccmp_nonce(const uint8_t *buf, const size_t len, ccmp_nonce* nonce)
 
 	// 802.11 standard 2016 - 12.5.3.2 CCMP MPDU format - pn5 is MSB
 	//FIXME This looks dirty
-	nonce->pn |= chdr->pn5 << 5;
-	nonce->pn |= chdr->pn4 << 4;
-	nonce->pn |= chdr->pn3 << 3;
-	nonce->pn |= chdr->pn2 << 2;
-	nonce->pn |= chdr->pn1 << 1;
-	nonce->pn |= chdr->pn0;
+	nonce->pn |= (uint64_t) chdr->pn5 << 40;
+	nonce->pn |= (uint64_t) chdr->pn4 << 32;
+	nonce->pn |= (uint64_t) chdr->pn3 << 24;
+	nonce->pn |= (uint64_t) chdr->pn2 << 16;
+	nonce->pn |= (uint64_t) chdr->pn1 << 8;
+	nonce->pn |= (uint64_t) chdr->pn0;
 
 	std::cout << "Parse nonce with PN = " << nonce->pn << std::endl;
 

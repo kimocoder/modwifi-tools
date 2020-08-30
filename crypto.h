@@ -96,13 +96,13 @@ typedef struct ccmp_pkt
 } ccmp_pkt;
 
 /** Two xored plaintext packets */
-typedef struct ccmp_xored_pkts
+typedef struct ccmp_xored_pkt
 {
-	ccmp_nonce nonce;
+	uint64_t pn;
 	/** 9.2.4.7 Frame Body field, Table 9-19 - Maximum MSDU size is 2302 bytes */
 	// MIC field is 8 bytes
-	uint8_t xored_pkts[MAX_MSDU_BODY_SIZE + 8];
-} ccmp_xored_pkts;
+	uint8_t data[MAX_MSDU_BODY_SIZE + 8];
+} ccmp_xored_pkt;
 
 /**
  * Reads the relevant values for the CCMP nonce from the ieee80211 and CCMP header
