@@ -96,10 +96,10 @@ int KrackState::handle_packet(uint8_t *buf, size_t plen)
 		else if(eapol.framenum == 4)
 		{
 			save_eapol_msg(buf, plen, &eapol);
-			return plen;
 			if (msg3_buf.size() >= 2)
 			{
 				std::cout << "\nCaptured at least 2 Msg3" << std::endl;
+				state = MSG4_FWD;
 				return plen;
 			}
 			return 0;

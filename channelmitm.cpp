@@ -1138,6 +1138,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 	// Detect & handle MIC failure. Don't forward it.
 	if (detect_mic_failure(buf, *plen, dbgout))
 		return 0;
+#endif
 	if (client)
 	{
 		// TODO Do this in a KrackState method
@@ -1157,7 +1158,6 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 
 		return rval;
 	}
-#endif
 	return *plen;
 }
 
