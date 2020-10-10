@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.1.0 FATAL_ERROR)
 set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -pthread")
 
 # FIXME: Search for this path instead of hardcoding it
 include_directories(/usr/include/libnl3)
@@ -13,7 +14,7 @@ add_executable(reactivejam reactivejam.cpp)
 target_link_libraries(reactivejam util)
 
 project(channelmitm)
-add_executable(channelmitm channelmitm.cpp ClientInfo.cpp SeqnumType.cpp SeqnumStats.cpp chopstate.cpp)
+add_executable(channelmitm channelmitm.cpp ClientInfo.cpp SeqnumType.cpp SeqnumStats.cpp chopstate.cpp KrackState.cpp )
 target_link_libraries(channelmitm util)
 
 project(constantjam)

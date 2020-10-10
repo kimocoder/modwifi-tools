@@ -4,8 +4,15 @@
 #include <stdint.h>
 #include <time.h>
 
+//#define CCMP_256
 
 #define TK_BITS		32
+
+#ifndef CCMP_256
+#define CCMP_BYTES	16
+#else
+#define CCMP_BYTES	32
+#endif
 
 union tkip_ptk
 {
@@ -41,6 +48,32 @@ union tkip_gtk
 		uint8_t mictods[8];
 	};
 };
+
+union ccmp_ptk
+{
+	/** Length: KCK: 128 bits | KEK: 128 bits | TK: CCMP_BYTES */
+	uint8_t ptk[32 + CCMP_BYTES];
+
+	/** IEEE 802.11-2016 12.7.1.3 - Pairwise key hierarchy */
+	struct {
+		/** used to calculate MIC of eapol frames */
+		uint8_t kck[16];
+		/** used to encrypt data in eapol frames */
+		uint8_t kek[16];
+
+		/** IEEE 802.11-2012 11.7.1 - Mapping PTK to TKIP keys */
+		/** temporal key used to encrypt packets */
+		uint8_t enc[CCMP_BYTES];
+	};
+
+};
+
+union ccmp_gtk
+{
+	uint8_t gtk[CCMP_BYTES];
+	uint8_t enc[CCMP_BYTES];
+};
+
 
 struct eapol_rns_ie
 {

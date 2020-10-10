@@ -435,6 +435,35 @@ bool beacon_get_ssid(uint8_t *buf, size_t len, char *outssid, size_t outlen)
 	return false;
 }
 
+bool beacon_set_channel_switch(uint8_t *buf, size_t *len, int newchan)
+{
+	if (newchan < 1 || newchan > 13)
+	{
+		fprintf(stderr, "%s: new channel %d should be between 1-13", __FUNCTION__, newchan);
+		return false;
+	}
+	size_t pos = get_offset_fixedparams(buf, *len);
+	if (pos == 0)
+	{
+		fprintf(stderr, "%s: Couldn't get offset of parameters", __FUNCTION__);
+		return false;
+	}
+
+	// IEEE Std 802.11-2016 - Table 9-27Beacon frame body (continued)
+	// Set Spectrum Management Required = True in beacon's capabilities
+	// Capabilities are the 2 bytes before the tags.
+	buf[pos-2] |= 0x0001;
+
+	// Append channel switch element/tag
+	// ID: 12, Lenght: 3, switch mode: 0, new channel: newchan, swich count: 1 (immediately)
+	uint8_t elem[5];
+	memcpy(elem, (uint8_t*) "\x0c\x03\x00\x00\x01", 5);
+	elem[3] = (uint8_t) newchan;
+	memcpy(buf + *len, elem, 5);
+	*len += 5;
+	return true;
+}
+
 bool beacon_set_ssid(uint8_t *buf, size_t *len, size_t maxlen, char *newssid)
 {
 	int newssidlen = strlen(newssid);

